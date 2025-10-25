@@ -332,105 +332,95 @@ class LoRAModule(PeftBase):
         pass
 
 
-class DoRAModule(LoRAModule):
-    """Weight-decomposed low rank adaptation.
-
-    Not unlike LoRA in theory but the forward pass is significantly more
-    complicated, as it involves taking the norm of the directional result.
+class DoRAMixin:
+    """Mixin providing DoRA (Weight-Decomposed Low-Rank Adaptation) functionality.
+    
+    Can be mixed into any PEFT module to add weight decomposition.
     """
-    dora_num_dims: int
     dora_scale: Tensor | None
     norm_epsilon: bool
     decompose_output_axis: bool
+    dora_num_dims: int
+    train_device: torch.device
 
-    def __init__(self, *args, **kwargs):
+    def init_dora_params(
+        self, 
+        norm_epsilon: bool = False,
+        decompose_output_axis: bool = False,
+        train_device: torch.device = None
+    ):
+        """Initialize DoRA-specific parameters.
+        
+        Args:
+            norm_epsilon: Add epsilon to norm for numerical stability
+            decompose_output_axis: Decompose along output axis instead of input
+            train_device: Device for training (needed for quantized weights)
+        """
         self.dora_scale = None
-        self.norm_epsilon = kwargs.pop('norm_epsilon', False)
-        self.decompose_output_axis = kwargs.pop('decompose_output_axis', False)
-        self.train_device = kwargs.pop('train_device')
-        super().__init__(*args, **kwargs)
-
-    def initialize_weights(self):
-        super().initialize_weights()
-
-        if isinstance(self.orig_module, nn.Linear):
-            orig_weight = get_unquantized_weight(self.orig_module, torch.float, self.train_device)
-        else:
-            assert isinstance(self.orig_module, nn.Conv2d)
-            orig_weight = self.orig_module.weight.detach().float()
-
-        # Thanks to KohakuBlueLeaf once again for figuring out the shape
-        # wrangling that works for both Linear and Convolutional layers. If you
-        # were just doing this for Linear, it would be substantially simpler.
+        self.norm_epsilon = norm_epsilon
+        self.decompose_output_axis = decompose_output_axis
+        self.train_device = train_device
+        
+    def initialize_dora_scale(self, orig_weight: Tensor):
+        """Initialize the DoRA scale parameter from original weights.
+        
+        Args:
+            orig_weight: The original weight tensor (unquantized, float)
+        """
         self.dora_num_dims = orig_weight.dim() - 1
+        
         if self.decompose_output_axis:
-            self.dora_scale = nn.Parameter(
-                torch.norm(
-                    orig_weight.reshape(orig_weight.shape[0], -1),
-                    dim=1, keepdim=True)
-                .reshape(orig_weight.shape[0], *[1] * self.dora_num_dims)
-                .to(device=self.orig_module.weight.device)
-            )
+            scale = torch.norm(
+                orig_weight.reshape(orig_weight.shape[0], -1),
+                dim=1, keepdim=True
+            ).reshape(orig_weight.shape[0], *[1] * self.dora_num_dims)
         else:
-            self.dora_scale = nn.Parameter(
-                torch.norm(
-                    orig_weight.transpose(1, 0).reshape(orig_weight.shape[1], -1),
-                    dim=1, keepdim=True)
-                .reshape(orig_weight.shape[1], *[1] * self.dora_num_dims)
-                .transpose(1, 0)
-                .to(device=self.orig_module.weight.device)
-            )
-
-        del orig_weight
-
-    def check_initialized(self):
-        super().check_initialized()
-        assert self.dora_scale is not None
-
-    def forward(self, x, *args, **kwargs):
-        self.check_initialized()
-        A = self.lora_down.weight
-        B = self.lora_up.weight
-
-        if isinstance(self.orig_module, nn.Linear):
-            orig_weight = get_unquantized_weight(self.orig_module, torch.float, self.train_device)
-        else:
-            assert isinstance(self.orig_module, nn.Conv2d)
-            orig_weight = self.orig_module.weight.detach().float()
-
-        WP = orig_weight + (self.make_weight(A, B) * (self.alpha / self.rank))
-        del orig_weight
-        # A norm should never really end up zero at any point, but epsilon just
-        # to be safe if we underflow or something. Also, as per section 4.3 of
-        # the paper, we treat the norm as a constant for the purposes of
-        # backpropagation in order to save VRAM (to do this, we detach it from
-        # the gradient graph).
-        eps = torch.finfo(WP.dtype).eps if self.norm_epsilon else 0.0
+            scale = torch.norm(
+                orig_weight.transpose(1, 0).reshape(orig_weight.shape[1], -1),
+                dim=1, keepdim=True
+            ).reshape(orig_weight.shape[1], *[1] * self.dora_num_dims).transpose(1, 0)
+        
+        self.dora_scale = nn.Parameter(
+            scale.to(device=self.orig_module.weight.device)
+        )
+        
+    def apply_dora(self, weight: Tensor) -> Tensor:
+        """Apply DoRA decomposition to a weight matrix.
+        
+        Args:
+            weight: Combined weight (original + PEFT adaptation)
+            
+        Returns:
+            Weight after DoRA decomposition
+        """
+        assert self.dora_scale is not None, "DoRA scale not initialized"
+        
+        # Compute norm (detached for memory efficiency per paper section 4.3)
+        eps = torch.finfo(weight.dtype).eps if self.norm_epsilon else 0.0
+        
         if self.decompose_output_axis:
-            norm = WP.detach() \
-                    .reshape(WP.shape[0], -1) \
-                    .norm(dim=1) \
-                    .reshape(WP.shape[0], *[1] * self.dora_num_dims) \
-                    + eps
+            norm = weight.detach() \
+                .reshape(weight.shape[0], -1) \
+                .norm(dim=1) \
+                .reshape(weight.shape[0], *[1] * self.dora_num_dims) + eps
         else:
-            norm = WP.detach() \
-                    .transpose(0, 1) \
-                    .reshape(WP.shape[1], -1) \
-                    .norm(dim=1, keepdim=True) \
-                    .reshape(WP.shape[1], *[1] * self.dora_num_dims) \
-                    .transpose(0, 1) + eps
-        WP = self.dora_scale * (WP / norm)
-        # In the DoRA codebase (and thus the paper results), they perform
-        # dropout on the *input*, rather than between layers, so we duplicate
-        # that here.
-        return self.op(self.dropout(x),
-                       WP,
-                       self.orig_module.bias,
-                       **self.layer_kwargs)
+            norm = weight.detach() \
+                .transpose(0, 1) \
+                .reshape(weight.shape[1], -1) \
+                .norm(dim=1, keepdim=True) \
+                .reshape(weight.shape[1], *[1] * self.dora_num_dims) \
+                .transpose(0, 1) + eps
+        
+        # Apply decomposition: scale * (weight / norm)
+        return self.dora_scale * (weight / norm)
 
+
+from modules.module.DoRALoRAModule import DoRALoRAModule
+from modules.module.DoRALoHaModule import DoRALoHaModule
 
 DummyLoRAModule = LoRAModule.make_dummy()
-DummyDoRAModule = DoRAModule.make_dummy()
+DummyDoRALoRAModule = DoRALoRAModule.make_dummy()
+DummyDoRALoHaModule = DoRALoHaModule.make_dummy()
 DummyLoHaModule = LoHaModule.make_dummy()
 
 
@@ -463,8 +453,8 @@ class LoRAModuleWrapper:
         weight_decompose = config.lora_decompose
         if self.peft_type == PeftType.LORA:
             if weight_decompose:
-                self.klass = DoRAModule
-                self.dummy_klass = DummyDoRAModule
+                self.klass = DoRALoRAModule
+                self.dummy_klass = DummyDoRALoRAModule
                 self.additional_args = [self.rank, self.alpha]
                 self.additional_kwargs = {
                     'norm_epsilon': config.lora_decompose_norm_epsilon,
