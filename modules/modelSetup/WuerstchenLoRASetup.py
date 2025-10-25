@@ -1,6 +1,6 @@
 from modules.model.WuerstchenModel import WuerstchenModel
 from modules.modelSetup.BaseWuerstchenSetup import BaseWuerstchenSetup
-from modules.module.LoRAModule import LoRAModuleWrapper
+from modules.module.LoRAModuleWrapper import LoRAModuleWrapper
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.NamedParameterGroup import NamedParameterGroupCollection
 from modules.util.optimizer_util import init_model_parameters

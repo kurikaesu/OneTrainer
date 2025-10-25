@@ -4,7 +4,7 @@ from random import Random
 from modules.model.BaseModel import BaseModel, BaseModelEmbedding
 from modules.model.util.clip_util import encode_clip
 from modules.module.AdditionalEmbeddingWrapper import AdditionalEmbeddingWrapper
-from modules.module.LoRAModule import LoRAModuleWrapper
+from modules.module.LoRAModuleWrapper import LoRAModuleWrapper
 from modules.util.convert.rescale_noise_scheduler_to_zero_terminal_snr import (
     rescale_noise_scheduler_to_zero_terminal_snr,
 )

@@ -207,65 +207,157 @@ class PeftBase(nn.Module):
         return Dummy
 
 
-from modules.module.DoRALoHaModule import DoRALoHaModule
-from modules.module.LoHaModule import LoHaModule
-
-
-class LoRAModule(PeftBase):
-    """Implementation of LoRA from the original paper."""
-
+class LoKrModule(PeftBase):
+    """Implementation of LoKR from LyCORIS.
+    
+    Low-Rank Kronecker Product decomposition for parameter-efficient fine-tuning.
+    Uses Kronecker product to create structured weight decompositions.
+    """
+    
     rank: int
     dropout: Dropout
-    lora_down: Tensor | None
-    lora_up: Tensor | None
-
+    w1_a: Tensor | None
+    w1_b: Tensor | None
+    w2_a: Tensor | None
+    w2_b: Tensor | None
+    
     def __init__(self, prefix: str, orig_module: nn.Module | None, rank: int, alpha: float):
         super().__init__(prefix, orig_module)
         self.rank = rank
         self.dropout = Dropout(0)
         self.register_buffer("alpha", torch.tensor(alpha))
-        self.lora_down = None
-        self.lora_up = None
-
+        self.w1_a = None
+        self.w1_b = None
+        self.w2_a = None
+        self.w2_b = None
+        
         if orig_module is not None:
             self.initialize_weights()
             self.alpha = self.alpha.to(orig_module.weight.device)
         self.alpha.requires_grad_(False)
-
+    
+    def kronecker_product(self, A: Tensor, B: Tensor) -> Tensor:
+        """Compute Kronecker product A ⊗ B
+        
+        If A is (m×n) and B is (p×q), result is (mp×nq)
+        
+        Args:
+            A: First tensor
+            B: Second tensor
+            
+        Returns:
+            Kronecker product of A and B
+        """
+        return torch.kron(A, B)
+    
     def initialize_weights(self):
         self._initialized = True
-
-        lora_down, lora_up = self.create_layer()
-        self.lora_down = lora_down.weight
-        self.lora_up = lora_up.weight
-
-        nn.init.normal_(self.lora_down, std=0.1)
-        nn.init.constant_(self.lora_up, 0)
-
+        
+        # Determine factor sizes for Kronecker decomposition
+        # For Linear: split input/output dimensions
+        # For Conv2d: split channels
+        if isinstance(self.orig_module, nn.Linear):
+            in_features = self.orig_module.in_features
+            out_features = self.orig_module.out_features
+            
+            # Find factorization that keeps matrices relatively square
+            in_factor = int(in_features ** 0.5)
+            out_factor = int(out_features ** 0.5)
+            
+            # Adjust to actual divisors if needed
+            while in_features % in_factor != 0:
+                in_factor -= 1
+            while out_features % out_factor != 0:
+                out_factor -= 1
+            
+            in_factor2 = in_features // in_factor
+            out_factor2 = out_features // out_factor
+            
+            # Create decomposed layers
+            w1_a = nn.Linear(in_factor, self.rank, bias=False, device=self.orig_module.weight.device)
+            w1_b = nn.Linear(in_factor2, self.rank, bias=False, device=self.orig_module.weight.device)
+            w2_a = nn.Linear(self.rank, out_factor, bias=False, device=self.orig_module.weight.device)
+            w2_b = nn.Linear(self.rank, out_factor2, bias=False, device=self.orig_module.weight.device)
+            
+            self.w1_a = w1_a.weight
+            self.w1_b = w1_b.weight
+            self.w2_a = w2_a.weight
+            self.w2_b = w2_b.weight
+            
+        elif isinstance(self.orig_module, nn.Conv2d):
+            # For Conv2d, use similar approach with channel factorization
+            in_channels = self.orig_module.in_channels
+            out_channels = self.orig_module.out_channels
+            kernel_size = self.orig_module.kernel_size
+            
+            in_factor = int(in_channels ** 0.5)
+            out_factor = int(out_channels ** 0.5)
+            
+            while in_channels % in_factor != 0:
+                in_factor -= 1
+            while out_channels % out_factor != 0:
+                out_factor -= 1
+            
+            in_factor2 = in_channels // in_factor
+            out_factor2 = out_channels // out_factor
+            
+            # Create conv layers with appropriate kernel sizes
+            w1_a = Conv2d(in_factor, self.rank, kernel_size, 
+                         stride=self.orig_module.stride,
+                         padding=self.orig_module.padding,
+                         bias=False, device=self.orig_module.weight.device)
+            w1_b = Conv2d(in_factor2, self.rank, (1, 1), bias=False, 
+                         device=self.orig_module.weight.device)
+            w2_a = Conv2d(self.rank, out_factor, (1, 1), bias=False, 
+                         device=self.orig_module.weight.device)
+            w2_b = Conv2d(self.rank, out_factor2, (1, 1), bias=False, 
+                         device=self.orig_module.weight.device)
+            
+            self.w1_a = w1_a.weight
+            self.w1_b = w1_b.weight
+            self.w2_a = w2_a.weight
+            self.w2_b = w2_b.weight
+        
+        # Initialize with careful strategy for stable training
+        nn.init.normal_(self.w1_a, std=0.1)
+        nn.init.normal_(self.w1_b, std=1)
+        nn.init.constant_(self.w2_a, 0)  # Zero init for stability
+        nn.init.normal_(self.w2_b, std=1)
+    
     def check_initialized(self):
         super().check_initialized()
-        assert self.lora_down is not None
-        assert self.lora_up is not None
-
+        assert self.w1_a is not None
+        assert self.w1_b is not None
+        assert self.w2_a is not None
+        assert self.w2_b is not None
+    
     def forward(self, x, *args, **kwargs):
-        # They definitely exist at this point in the execution.
         self.check_initialized()
-
-        W = self.make_weight(self.dropout(self.lora_down),
-                              self.dropout(self.lora_up))
-        W = W * (self.alpha / self.rank)
+        
+        # Apply dropout
+        w1_a_drop = self.dropout(self.w1_a)
+        w1_b_drop = self.dropout(self.w1_b)
+        w2_a_drop = self.dropout(self.w2_a)
+        w2_b_drop = self.dropout(self.w2_b)
+        
+        # Compute Kronecker products
+        # W1 = w1_a ⊗ w1_b
+        # W2 = w2_a ⊗ w2_b
+        W1 = self.kronecker_product(w1_a_drop, w1_b_drop)
+        W2 = self.kronecker_product(w2_a_drop, w2_b_drop)
+        
+        # Final weight: ΔW = W1 @ W2 * (alpha / rank)
+        W = self.make_weight(W1, W2) * (self.alpha / self.rank)
+        
         return self.orig_forward(x) + self.op(x, W, bias=None, **self.layer_kwargs)
-
+    
     def apply_to_module(self):
-        # TODO
+        # TODO: Implement weight merging if needed
         pass
-
+    
     def extract_from_module(self, base_module: nn.Module):
-        # TODO
+        # TODO: Implement extraction from full weights if needed
         pass
 
 
-DummyLoRAModule = LoRAModule.make_dummy()
-# DummyDoRALoRAModule = DoRALoRAModule.make_dummy()
-# DummyDoRALoHaModule = DoRALoHaModule.make_dummy()
-DummyLoHaModule = LoHaModule.make_dummy()
+DummyLoKrModule = LoKrModule.make_dummy()

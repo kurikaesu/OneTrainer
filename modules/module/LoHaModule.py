@@ -207,25 +207,32 @@ class PeftBase(nn.Module):
         return Dummy
 
 
-from modules.module.DoRALoHaModule import DoRALoHaModule
-from modules.module.LoHaModule import LoHaModule
 
 
-class LoRAModule(PeftBase):
-    """Implementation of LoRA from the original paper."""
+class LoHaModule(PeftBase):
+    """Implementation of LoHa from Lycoris.
+
+    Does not support Tucker decomposition, extra scalar, or weight decomposition
+    (DoRA). Those could be supported eventually, but currently no burning demand
+    and it was tough to do them in a sufficiently generic fashion.
+    """
 
     rank: int
     dropout: Dropout
-    lora_down: Tensor | None
-    lora_up: Tensor | None
+    hada_w1_a: Tensor | None
+    hada_w1_b: Tensor | None
+    hada_w2_a: Tensor | None
+    hada_w2_b: Tensor | None
 
     def __init__(self, prefix: str, orig_module: nn.Module | None, rank: int, alpha: float):
         super().__init__(prefix, orig_module)
         self.rank = rank
         self.dropout = Dropout(0)
         self.register_buffer("alpha", torch.tensor(alpha))
-        self.lora_down = None
-        self.lora_up = None
+        self.hada_w1_a = None
+        self.hada_w1_b = None
+        self.hada_w2_a = None
+        self.hada_w2_b = None
 
         if orig_module is not None:
             self.initialize_weights()
@@ -235,25 +242,36 @@ class LoRAModule(PeftBase):
     def initialize_weights(self):
         self._initialized = True
 
-        lora_down, lora_up = self.create_layer()
-        self.lora_down = lora_down.weight
-        self.lora_up = lora_up.weight
+        hada_w1_b, hada_w1_a = self.create_layer()
+        hada_w2_b, hada_w2_a = self.create_layer()
+        self.hada_w1_a = hada_w1_a.weight
+        self.hada_w1_b = hada_w1_b.weight
+        self.hada_w2_a = hada_w2_a.weight
+        self.hada_w2_b = hada_w2_b.weight
 
-        nn.init.normal_(self.lora_down, std=0.1)
-        nn.init.constant_(self.lora_up, 0)
+        nn.init.normal_(self.hada_w1_a, std=0.1)
+        nn.init.normal_(self.hada_w1_b, std=1)
+        nn.init.constant_(self.hada_w2_a, 0)
+        nn.init.normal_(self.hada_w2_b, std=1)
 
     def check_initialized(self):
         super().check_initialized()
-        assert self.lora_down is not None
-        assert self.lora_up is not None
+        assert self.hada_w1_a is not None
+        assert self.hada_w1_b is not None
+        assert self.hada_w2_a is not None
+        assert self.hada_w2_b is not None
 
     def forward(self, x, *args, **kwargs):
         # They definitely exist at this point in the execution.
         self.check_initialized()
 
-        W = self.make_weight(self.dropout(self.lora_down),
-                              self.dropout(self.lora_up))
-        W = W * (self.alpha / self.rank)
+        # Yeah, yeah, it's different from the A/B parameters in make_weight.
+        # Lycoris defines them in the opposite order. Yeah, it's confusing.
+        W1 = self.make_weight(self.dropout(self.hada_w1_b),
+                              self.dropout(self.hada_w1_a))
+        W2 = self.make_weight(self.dropout(self.hada_w2_b),
+                              self.dropout(self.hada_w2_a))
+        W = (W1 * W2) * (self.alpha / self.rank)
         return self.orig_forward(x) + self.op(x, W, bias=None, **self.layer_kwargs)
 
     def apply_to_module(self):
@@ -263,9 +281,3 @@ class LoRAModule(PeftBase):
     def extract_from_module(self, base_module: nn.Module):
         # TODO
         pass
-
-
-DummyLoRAModule = LoRAModule.make_dummy()
-# DummyDoRALoRAModule = DoRALoRAModule.make_dummy()
-# DummyDoRALoHaModule = DoRALoHaModule.make_dummy()
-DummyLoHaModule = LoHaModule.make_dummy()

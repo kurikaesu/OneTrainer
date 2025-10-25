@@ -1,6 +1,6 @@
 from modules.model.StableDiffusionModel import StableDiffusionModel
 from modules.modelSetup.BaseStableDiffusionSetup import BaseStableDiffusionSetup
-from modules.module.LoRAModule import LoRAModuleWrapper
+from modules.module.LoRAModuleWrapper import LoRAModuleWrapper
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.NamedParameterGroup import NamedParameterGroupCollection
 from modules.util.optimizer_util import init_model_parameters

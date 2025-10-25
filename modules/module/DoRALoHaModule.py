@@ -3,10 +3,10 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from modules.util.quantization_util import get_unquantized_weight
-from modules.module.LoRAModule import LoHaModule, DoRAMixin
+from modules.module.DoRAMixin import DoRAMixin
 
 
-class DoRALoHaModule(LoHaModule, DoRAMixin):
+class DoRALoHaModule(DoRAMixin):
     """LoHa module with DoRA weight decomposition support."""
     
     def __init__(self, prefix: str, orig_module: nn.Module | None, rank: int, alpha: float, **kwargs):
@@ -14,6 +14,9 @@ class DoRALoHaModule(LoHaModule, DoRAMixin):
         norm_epsilon = kwargs.pop('norm_epsilon', False)
         decompose_output_axis = kwargs.pop('decompose_output_axis', False)
         train_device = kwargs.pop('train_device')
+        
+        # Import LoHaModule here to avoid circular import
+        from modules.module.LoHaModule import LoHaModule
         
         # Initialize LoHa parent
         super().__init__(prefix, orig_module, rank, alpha)

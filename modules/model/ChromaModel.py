@@ -4,7 +4,7 @@ from random import Random
 from modules.model.BaseModel import BaseModel, BaseModelEmbedding
 from modules.model.util.t5_util import encode_t5
 from modules.module.AdditionalEmbeddingWrapper import AdditionalEmbeddingWrapper
-from modules.module.LoRAModule import LoRAModuleWrapper
+from modules.module.LoRAModuleWrapper import LoRAModuleWrapper
 from modules.util.enum.DataType import DataType
 from modules.util.enum.ModelType import ModelType
 from modules.util.LayerOffloadConductor import LayerOffloadConductor

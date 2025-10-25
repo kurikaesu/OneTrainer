@@ -1,6 +1,6 @@
 from modules.model.FluxModel import FluxModel
 from modules.modelSetup.BaseFluxSetup import BaseFluxSetup
-from modules.module.LoRAModule import LoRAModuleWrapper
+from modules.module.LoRAModuleWrapper import LoRAModuleWrapper
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.NamedParameterGroup import NamedParameterGroupCollection
 from modules.util.optimizer_util import init_model_parameters

@@ -1,6 +1,6 @@
 from modules.model.SanaModel import SanaModel
 from modules.modelSetup.BaseSanaSetup import BaseSanaSetup
-from modules.module.LoRAModule import LoRAModuleWrapper
+from modules.module.LoRAModuleWrapper import LoRAModuleWrapper
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.NamedParameterGroup import NamedParameterGroupCollection
 from modules.util.optimizer_util import init_model_parameters

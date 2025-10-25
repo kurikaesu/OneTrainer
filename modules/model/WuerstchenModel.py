@@ -3,7 +3,7 @@ from random import Random
 
 from modules.model.BaseModel import BaseModel, BaseModelEmbedding
 from modules.module.AdditionalEmbeddingWrapper import AdditionalEmbeddingWrapper
-from modules.module.LoRAModule import LoRAModuleWrapper
+from modules.module.LoRAModuleWrapper import LoRAModuleWrapper
 from modules.util.enum.DataType import DataType
 from modules.util.enum.ModelType import ModelType
 

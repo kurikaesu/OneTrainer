@@ -1,4 +1,4 @@
-from modules.module.LoRAModule import LoRAModuleWrapper
+from modules.module.LoRAModuleWrapper import LoRAModuleWrapper
 
 from torch import nn
 
